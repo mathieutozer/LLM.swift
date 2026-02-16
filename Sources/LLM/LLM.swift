@@ -539,7 +539,79 @@ public actor LLMCore {
         
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
+    /// Generate text constrained by a GBNF grammar using llama.cpp's native grammar sampler.
+    ///
+    /// The grammar sampler is added as the **first** element in a fresh sampler chain,
+    /// acting as a hard structural constraint that masks invalid tokens before the
+    /// usual sampling pipeline (penalties → top-k → top-p → temp → dist) runs.
+    ///
+    /// When the grammar's root rule is fully matched, only the EOS token remains
+    /// valid, causing the generation loop to terminate naturally.
+    ///
+    /// - Parameters:
+    ///   - input: The full prompt (e.g. ChatML-formatted) to generate from.
+    ///   - grammar: A GBNF grammar string defining the valid output structure.
+    ///   - grammarRoot: The name of the root rule in the grammar (default: `"root"`).
+    /// - Returns: The generated text, guaranteed to conform to the grammar.
+    /// - Throws: `LLMError.contextCreationFailed` if the context or grammar is invalid.
+    public func generateWithGrammar(
+        from input: String,
+        grammar: String,
+        grammarRoot: String = "root"
+    ) throws -> String {
+        debugLastGeneratedTokens = []
+        resetContext()
+        guard prepareContext(for: input) else { throw LLMError.contextCreationFailed }
+
+        // Free the current sampler and build a new chain with grammar constraint first
+        if let sampler {
+            llama_sampler_free(sampler)
+        }
+
+        let samplerParams = llama_sampler_chain_default_params()
+        let grammarSampler = llama_sampler_chain_init(samplerParams)
+
+        // Grammar sampler goes FIRST — it's a hard constraint that masks invalid tokens
+        let grammarConstraint = grammar.withCString { grammarCStr in
+            grammarRoot.withCString { rootCStr in
+                llama_sampler_init_grammar(vocab, grammarCStr, rootCStr)
+            }
+        }
+        guard let grammarConstraint else {
+            // Grammar failed to parse — restore standard sampler and throw
+            llama_sampler_free(grammarSampler)
+            recreateSampler()
+            throw LLMError.contextCreationFailed
+        }
+        llama_sampler_chain_add(grammarSampler, grammarConstraint)
+
+        // Then the standard sampling pipeline
+        llama_sampler_chain_add(grammarSampler, llama_sampler_init_penalties(repetitionLookback, repeatPenalty, 0, 0))
+        llama_sampler_chain_add(grammarSampler, llama_sampler_init_top_k(topK))
+        llama_sampler_chain_add(grammarSampler, llama_sampler_init_top_p(topP, 1))
+        llama_sampler_chain_add(grammarSampler, llama_sampler_init_temp(temp))
+        llama_sampler_chain_add(grammarSampler, llama_sampler_init_dist(seed))
+
+        self.sampler = grammarSampler
+
+        // Restore the standard sampler when we exit (success or failure)
+        defer { recreateSampler() }
+
+        var output = ""
+
+        while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount) {
+            let token = predictNextToken()
+            guard token != endToken else { break }
+
+            let decoded = decode(token)
+            output += decoded
+            debugLastGeneratedTokens.append(token)
+        }
+
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func getValueStartTokensForField(_ field: SchemaField) -> Set<Token> {
         switch field.type {
         case .string:
