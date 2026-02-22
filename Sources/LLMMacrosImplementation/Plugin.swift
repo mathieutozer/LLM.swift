@@ -3,7 +3,7 @@ import SwiftSyntaxMacros
 
 @main
 struct LLMMacrosPlugin: CompilerPlugin {
-    let providingMacros: [Macro.Type] = [
-        GeneratableMacro.self,
-    ]
-} 
+  let providingMacros: [Macro.Type] = [
+    GeneratableMacro.self
+  ]
+}
