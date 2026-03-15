@@ -327,9 +327,9 @@ public actor LLMCore {
     llama_memory_clear(llama_get_memory(context), false)
   }
 
-  func generateResponseStream(from input: String, thinking: ThinkingMode = .none) -> AsyncStream<
-    String
-  > {
+  public func generateResponseStream(
+    from input: String, thinking: ThinkingMode = .none
+  ) -> AsyncStream<String> {
     generateResponseStreamWithThinking(from: input, thinking: thinking).response
   }
 
